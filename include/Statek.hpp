@@ -44,17 +44,17 @@ class Statek {
   static void occupy_sigint();
 
  private:
-  
-  struct uinput_setup m_usetup;
   int m_fd;
   std::unique_ptr<RtMidiIn> m_up_midiin;
   std::vector<unsigned char> m_message;
+  
   /// for keys other than 0/1
-  std::map<int, int> m_key_states;
-  inline static bool not_end = true;
+  std::map<int, int> m_abs_states;
 
   /// Empty if pad is off.
   const Map *m_p_map;
+
+  volatile inline static bool not_end = true;
 
   void deactivate_map_and_uinput();
   void init_midi();

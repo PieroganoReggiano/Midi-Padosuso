@@ -28,7 +28,11 @@ int main(int argc, char** argv) {
   //statek.activate_map(Statek::P_DEFAULT_MAP);
   statek.activate_map(&tekken_pad);
 
+  // Here program will fail if there is not midi at 1.
+  // TODO make some nice choosing of devices.
   statek.use_midi(1);
+  // More, after initialization this can be changed by some ALSA tools or even
+  // by JACK Audio patchbays.
 
   while(statek.loop());
 

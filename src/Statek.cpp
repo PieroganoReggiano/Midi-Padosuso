@@ -13,6 +13,8 @@ using namespace std::string_literals;
 
 volatile static bool *p_not_end;
 
+inline static constexpr bool use_xones_numbers = true;
+
 namespace padosuso {
 
 Statek::Statek() {
@@ -27,7 +29,6 @@ Statek::~Statek() {
 }
 
 void Statek::activate_map(const Map* p_map) {
-
   if (pad_activated()) {
     deactivate_map_and_uinput();
   }
@@ -40,49 +41,51 @@ void Statek::activate_map(const Map* p_map) {
     throw std::runtime_error("could not open /dev/uinput");
   }
 
-  std::memset(&m_usetup, 0, sizeof(m_usetup));
-  m_usetup.id.bustype = BUS_USB;
-  m_usetup.id.vendor = 0xffff;
-  m_usetup.id.product = 0x0000;
-  m_usetup.id.version = 0xffff;
-  strcpy(m_usetup.name, "Padosuso");
+  struct uinput_setup usetup;
+  std::memset(&usetup, 0, sizeof(usetup));
+  usetup.id.bustype = BUS_USB;
 
-  ioctl(m_fd, UI_SET_EVBIT, EV_KEY);
-  for (auto it = p_map->classic_keys.cbegin();
-      it != p_map->classic_keys.cend();
-      ++it) {
-    ClassicKey ck(*it);
-    ioctl(m_fd, UI_SET_KEYBIT, ck.key);
+  usetup.id.vendor = 0x00ff;
+  usetup.id.product = 0x0000;
+  usetup.id.version = 0x0001;
+  
+  if (use_xones_numbers) {
+    // Here we set Microsoft X-Box One S pad numbers so many programs will
+    // deal with Padosuso like with X-Box One gamepad :>
+    usetup.id.vendor = 0x045e;
+    usetup.id.product = 0x02ea;
+    usetup.id.version = 0x0301;
   }
+  std::strcpy(usetup.name, "Padosuso");
 
-  if (p_map->two_way_keys.size() > 0) {
+  // Normal buttons (EV_KEY)
+  if (!p_map->ev_keys.empty()) {
+    ioctl(m_fd, UI_SET_EVBIT, EV_KEY);
+    for (auto it = p_map->ev_keys.cbegin(); it != p_map->ev_keys.cend(); ++it) {
+      ioctl(m_fd, UI_SET_KEYBIT, *it);
+    }
+  }
+  
+  // Absolute buttons (EV_ABS)
+  if (!p_map->ev_abss.empty()) {
     ioctl(m_fd, UI_SET_EVBIT, EV_ABS);
-    //ioctl(m_fd, UI_SET_EVBIT, EV_FF);
-  }
-  for (auto it = p_map->two_way_keys.cbegin();
-      it != p_map->two_way_keys.cend();
-      ++it) {
-    TwoWayKey twk(*it);
-    ioctl(m_fd, UI_SET_ABSBIT, twk.key);
-    struct uinput_abs_setup abs_setup;
-    std::memset(&abs_setup, 0, sizeof(abs_setup));
-    abs_setup.code = twk.key;
-    abs_setup.absinfo.minimum = -1;
-    abs_setup.absinfo.maximum = 1;
-    ioctl(m_fd, UI_ABS_SETUP, &abs_setup);
+    for (auto it = p_map->ev_abss.cbegin(); it != p_map->ev_abss.cend(); ++it) {
+      int abs_code = it->first;
+      ioctl(m_fd, UI_SET_ABSBIT, abs_code);
+      m_abs_states[abs_code] = 0;
+      struct uinput_abs_setup abs_setup;
+      std::memset(&abs_setup, 0, sizeof(abs_setup));
+      abs_setup.code = abs_code;
+      abs_setup.absinfo.minimum = it->second.min;
+      abs_setup.absinfo.maximum = it->second.max;
+      abs_setup.absinfo.fuzz = it->second.fuzz;
+      abs_setup.absinfo.flat = it->second.flat;
+      ioctl(m_fd, UI_ABS_SETUP, &abs_setup);
+    }
   }
 
-
-  ioctl(m_fd, UI_DEV_SETUP, &m_usetup);
+  ioctl(m_fd, UI_DEV_SETUP, &usetup);
   ioctl(m_fd, UI_DEV_CREATE);
-
-  m_key_states.clear();
-
-  for (auto it = p_map->two_way_keys.cbegin();
-      it != p_map->two_way_keys.cbegin();
-      ++it) {
-    m_key_states[it->key] = 0;
-  }
 
   m_p_map = p_map;
   usleep(100);
@@ -93,6 +96,7 @@ void Statek::deactivate_map_and_uinput() {
     ioctl(m_fd, UI_DEV_DESTROY);
     close(m_fd);
   }
+  m_abs_states.clear();
 }
 
 void Statek::use_midi(unsigned number) {
@@ -141,47 +145,44 @@ bool Statek::loop() {
   double stamp = m_up_midiin->getMessage(&m_message);
   (void)stamp;
   if (m_message.size() >= 3) {
-    int type_chyba = (int)m_message[0];
-    int note = (int)m_message[1];
-    int velocity = (int)m_message[2];
+    int event_type = m_message[0];
+    Note note = m_message[1];
+    int velocity = m_message[2];
     (void)velocity;
-    if (m_p_map->classic_keys.contains(note)) {
-      if (type_chyba == NOTE_ON) {
-        emit(EV_KEY, m_p_map->classic_keys.at(note), 1);
+    // Here, classic keys have priority over abs, so if one is in
+    // both sets, only classic will be handled.
+    // Also, by now we handle only NOTE_ON (144) and NOTE_OFF events.
+    decltype(Map::classic_keys)::const_iterator ckit;
+    decltype(Map::two_way_keys)::const_iterator twkit;
+    if (event_type == NOTE_ON) {
+      if ((ckit = m_p_map->classic_keys.find(note))
+          != m_p_map->classic_keys.cend()) {
+        emit(EV_KEY, ckit->second, 1);
         emit(EV_SYN, SYN_REPORT, 0);
-      } else if (type_chyba == NOTE_OFF) {
-        emit(EV_KEY, m_p_map->classic_keys.at(note), 0);
+      } else if ((twkit = m_p_map->two_way_keys.find(note))
+          != m_p_map->two_way_keys.cend()) {
+        int value =
+          m_abs_states[twkit->second.abs_code] + twkit->second.added_value;
+        m_abs_states[twkit->second.abs_code] = value;
+        emit(EV_ABS, twkit->second.abs_code, value);
         emit(EV_SYN, SYN_REPORT, 0);
       }
-    } else {
-      for (auto it = m_p_map->two_way_keys.cbegin();
-          it != m_p_map->two_way_keys.cend();
-          ++it) {
-        if (type_chyba == NOTE_ON) {
-          if (note == it->negative_note) {
-            m_key_states[it->key] -= 1;
-            emit(EV_ABS, it->key, m_key_states[it->key]);
-            emit(EV_SYN, SYN_REPORT, 0);
-          } else if (note == it->positive_note) {
-            m_key_states[it->key] += 1;
-            emit(EV_ABS, it->key, m_key_states[it->key]);
-            emit(EV_SYN, SYN_REPORT, 0);
-          }
-        } else if (type_chyba == NOTE_OFF) {
-          if (note == it->negative_note) {
-            m_key_states[it->key] += 1;
-            emit(EV_ABS, it->key, m_key_states[it->key]);
-            emit(EV_SYN, SYN_REPORT, 0);
-          } else if (note == it->positive_note) {
-            m_key_states[it->key] -= 1;
-            emit(EV_ABS, it->key, m_key_states[it->key]);
-            emit(EV_SYN, SYN_REPORT, 0);
-          }
-        }
+    } else if (event_type == NOTE_OFF) {
+      if ((ckit = m_p_map->classic_keys.find(note))
+          != m_p_map->classic_keys.cend()) {
+        emit(EV_KEY, ckit->second, 0);
+        emit(EV_SYN, SYN_REPORT, 0);
+      } else if ((twkit = m_p_map->two_way_keys.find(note))
+          != m_p_map->two_way_keys.cend()) {
+        int value =
+          m_abs_states[twkit->second.abs_code] - twkit->second.added_value;
+        m_abs_states[twkit->second.abs_code] = value;
+        emit(EV_ABS, twkit->second.abs_code, value);
+        emit(EV_SYN, SYN_REPORT, 0);
       }
     }
   }
-  usleep(20);
+  usleep(60);
   return not_end;
 }
 

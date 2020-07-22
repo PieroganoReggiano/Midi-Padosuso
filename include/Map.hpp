@@ -1,9 +1,12 @@
 #pragma once
 
+#include <set>
 #include <map>
 #include <vector>
 
 namespace padosuso {
+
+using Note = unsigned char;
 
 struct ClassicKey {
   unsigned char note;
@@ -13,16 +16,26 @@ struct ClassicKey {
 };
 
 struct TwoWayKey {
-  unsigned char negative_note;
-  unsigned char positive_note;
-  int key;
-  int min;
-  int max;
+  int abs_code;
+  int added_value;
+};
+
+struct AbsProps {
+  int min = -1;
+  int max = 1;
+  int fuzz = 0;
+  int flat = 0;
 };
 
 struct Map {
-  std::map<unsigned char, int> classic_keys;
-  std::vector<TwoWayKey> two_way_keys;
+  std::set<int> ev_keys;
+  std::map<int, AbsProps> ev_abss;
+
+  /// Key must be added in 'ev_keys'.
+  std::map<Note, int> classic_keys;
+
+  /// Abses
+  std::map<Note, TwoWayKey> two_way_keys;
 };
 
 extern const Map quake_wsad;
